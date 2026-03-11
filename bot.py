@@ -255,9 +255,10 @@ def is_similar_question_already_saved(question: str) -> bool:
 
 
 # =========================
-# КЛАВИАТУРЫ
+# КНОПКИ ПОД СООБЩЕНИЯМИ
 # =========================
 
+# Стартовая кнопка "Помочь команде"
 def main_menu_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="Помочь команде", callback_data="help_team")
@@ -265,6 +266,7 @@ def main_menu_keyboard():
     return builder.as_markup()
 
 
+# Бот не нашел ответ на вопрос
 def not_found_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="Да, отправить вопрос", callback_data="save_unknown_question")
@@ -274,6 +276,7 @@ def not_found_keyboard():
     return builder.as_markup()
 
 
+#  Помощь команде
 def help_team_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="Предложить новый вопрос", callback_data="new_question_only")
@@ -284,8 +287,16 @@ def help_team_keyboard():
     return builder.as_markup()
 
 
+# Возврат в меню помощи команде
+def back_to_help_team_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Назад", callback_data="back_to_help_team")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 # =========================
-# ВСПОМОГАТЕЛЬНОЕ
+# ВСПОМОГАТЕЛЬНОЕ (для кнопок)
 # =========================
 
 def get_open_questions_text(limit: int = 10) -> str:
@@ -331,6 +342,15 @@ async def help_command_handler(message: Message):
 
 
 async def help_team_callback(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Меню помощи команде:",
+        reply_markup=help_team_keyboard()
+    )
+    await callback.answer()
+
+
+async def back_to_help_team_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text(
         "Меню помощи команде:",
         reply_markup=help_team_keyboard()
@@ -422,7 +442,8 @@ async def cancel_unknown_question_callback(callback: CallbackQuery, state: FSMCo
 async def new_question_only_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_new_question_for_team)
     await callback.message.edit_text(
-        "Напиши вопрос, который стоит добавить в FAQ."
+        "Напиши вопрос, который стоит добавить в FAQ.",
+        reply_markup=back_to_help_team_keyboard()
     )
     await callback.answer()
 
@@ -456,7 +477,8 @@ async def save_new_question_only_handler(message: Message, state: FSMContext):
 async def new_question_with_answer_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_new_question_with_answer_question)
     await callback.message.edit_text(
-        "Напиши новый вопрос, который стоит добавить в FAQ."
+        "Напиши новый вопрос, который стоит добавить в FAQ.",
+        reply_markup=back_to_help_team_keyboard()
     )
     await callback.answer()
 
@@ -471,7 +493,10 @@ async def new_question_with_answer_question_handler(message: Message, state: FSM
     await state.update_data(proposed_question=question)
     await state.set_state(BotStates.waiting_new_question_with_answer_answer)
 
-    await message.answer("Теперь напиши свой вариант ответа на этот вопрос.")
+    await message.answer(
+        "Теперь напиши свой вариант ответа на этот вопрос.",
+    reply_markup=back_to_help_team_keyboard()
+    )
 
 
 async def new_question_with_answer_answer_handler(message: Message, state: FSMContext):
@@ -519,7 +544,8 @@ async def answer_open_question_callback(callback: CallbackQuery, state: FSMConte
     await state.set_state(BotStates.waiting_select_open_question)
     await callback.message.edit_text(
         get_open_questions_text(limit=10) +
-        "\n\nНапиши номер вопроса, на который хочешь предложить ответ."
+        "\n\nНапиши номер вопроса, на который хочешь предложить ответ.",
+        reply_markup=back_to_help_team_keyboard()
     )
     await callback.answer()
 
@@ -598,6 +624,7 @@ async def main():
     dp.message.register(help_command_handler, Command("helpteam"))
 
     dp.callback_query.register(help_team_callback, F.data == "help_team")
+    dp.callback_query.register(back_to_help_team_callback, F.data == "back_to_help_team")
     dp.callback_query.register(back_to_main_callback, F.data == "back_to_main")
 
     dp.callback_query.register(save_unknown_question_callback, F.data == "save_unknown_question")
