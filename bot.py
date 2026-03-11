@@ -17,7 +17,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # НАСТРОЙКИ
 # =========================
 
-BOT_TOKEN = "8633303763:AAEPeDPL-PX41f69eN8VgvzdQ4jFXr_D_zY"
+BOT_TOKEN = ""
 FAQ_FILE = "faq.yaml"
 
 MIN_WORD_LEN = 3
