@@ -17,7 +17,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # НАСТРОЙКИ
 # =========================
 
-BOT_TOKEN = ""
+BOT_TOKEN = "8633303763:AAEPeDPL-PX41f69eN8VgvzdQ4jFXr_D_zY"
 FAQ_FILE = "faq.yaml"
 
 MIN_WORD_LEN = 3
@@ -47,12 +47,14 @@ class BotStates(StatesGroup):
 # РАБОТА С FAQ
 # =========================
 
-#Удаляем слова у которых длина меньше заданного значения (по умолчанию 3), чтобы не учитывать предлоги и тп
+
+# Удаляем слова у которых длина меньше заданного значения (по умолчанию 3), чтобы не учитывать предлоги и тп
 def split_words(text: str) -> set[str]:
     words = re.findall(r"[а-яА-Яa-zA-Z0-9ёЁ]+", text.lower())
     return {word for word in words if len(word) >= MIN_WORD_LEN}
 
-#Загрузка FAQ
+
+# Загрузка FAQ
 def load_faq(filename: str = FAQ_FILE) -> list[dict]:
     with open(filename, "r", encoding="utf-8") as file:
         faq_data = yaml.safe_load(file)
@@ -61,19 +63,27 @@ def load_faq(filename: str = FAQ_FILE) -> list[dict]:
 
 # Сравнивает слова введенные пользователем и ключевые слова из FAQ
 # Вес совпадения:
-# 3 - точное совпадение
-# 2 - частичное совпадение
+# 4 - точное совпадение
+# 3 - частичное совпадение
+# 2 - часть слова (начало) совпадает с ключевым
 # 0 - нет совпадения
 def compare_word_and_keyword(word: str, keyword_part: str) -> int:
     if word == keyword_part:
-        return 3
+        return 4
 
     if word in keyword_part or keyword_part in word:
-        return 2
+        return 3
+
+    min_prefix_len = 4
+
+    if len(word) >= min_prefix_len and len(keyword_part) >= min_prefix_len:
+        if word[:min_prefix_len] == keyword_part[:min_prefix_len]:
+            return 2
 
     return 0
 
-#Подсчет количества очков для поиска лучшего совпадения
+
+# Подсчет количества очков для поиска лучшего совпадения
 def calculate_score(question_words: set[str], keywords: list[str]) -> int:
     total_score = 0
     used_keyword_parts = set()
@@ -96,6 +106,7 @@ def calculate_score(question_words: set[str], keywords: list[str]) -> int:
     return total_score
 
 
+# Поиск лучших совпадений по базе FAQ
 def search_top_faq(question: str, faq_entries: list[dict], top_n: int = 3) -> list[tuple[int, dict]]:
     question_words = split_words(question)
     results = []
@@ -108,6 +119,7 @@ def search_top_faq(question: str, faq_entries: list[dict], top_n: int = 3) -> li
     return results[:top_n]
 
 
+# Вывод лучших совпадений в FAQ (топ 3)
 def search_best_faq(question: str, faq_entries: list[dict], min_score: int = MIN_SCORE_TO_ACCEPT):
     results = search_top_faq(question, faq_entries, top_n=1)
     if not results:
@@ -118,6 +130,20 @@ def search_best_faq(question: str, faq_entries: list[dict], min_score: int = MIN
         return None
 
     return score, entry
+
+
+
+# Отсечение неподходящих элементов (количество набранных очков < 2 || разница в очках с лучшим вариантом > 1)
+def search_matching_faq(question: str, faq_entries: list[dict], min_score: int = MIN_SCORE_TO_ACCEPT, top_n: int = 5):
+    results = search_top_faq(question, faq_entries, top_n=top_n)
+    results = [(score, entry) for score, entry in results if score >= min_score]
+
+    if not results:
+        return []
+
+    best_score = results[0][0]
+    return [(score, entry) for score, entry in results if score >= best_score - 1]
+
 
 
 # =========================
@@ -326,14 +352,17 @@ async def message_search_handler(message: Message, state: FSMContext):
     if not text:
         return
 
-    result = search_best_faq(text, faq_entries, min_score=MIN_SCORE_TO_ACCEPT)
+    results = search_matching_faq(text, faq_entries, min_score=MIN_SCORE_TO_ACCEPT, top_n=3)
 
-    if result is not None:
-        score, entry = result
+    if results:
         await state.clear()
+
+        answers = []
+        for i, (score, entry) in enumerate(results, start=1):
+            answers.append(f"{i}. {entry['answer']}")
+
         await message.answer(
-            f"{entry['answer']}\n\n"
-            f"(релевантность: {score})",
+            "Вот что удалось найти:\n\n" + "\n\n".join(answers),
             reply_markup=main_menu_keyboard()
         )
         return
