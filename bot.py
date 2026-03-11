@@ -73,7 +73,7 @@ def compare_word_and_keyword(word: str, keyword_part: str) -> int:
 
     return 0
 
-
+#Подсчет количества очков для поиска лучшего совпадения
 def calculate_score(question_words: set[str], keywords: list[str]) -> int:
     total_score = 0
     used_keyword_parts = set()
@@ -331,11 +331,11 @@ async def message_search_handler(message: Message, state: FSMContext):
     if result is not None:
         score, entry = result
         await state.clear()
-         # await message.answer(
-        #     f"{entry['answer']}\n\n"
-        #     f"(релевантность: {score})",
-        #     reply_markup=main_menu_keyboard()
-        # )
+        await message.answer(
+            f"{entry['answer']}\n\n"
+            f"(релевантность: {score})",
+            reply_markup=main_menu_keyboard()
+        )
         return
 
     await state.set_state(BotStates.waiting_confirm_unknown_question)
