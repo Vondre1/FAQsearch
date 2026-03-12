@@ -10,6 +10,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
@@ -74,7 +75,7 @@ def compare_word_and_keyword(word: str, keyword_part: str) -> int:
     if word in keyword_part or keyword_part in word:
         return 3
 
-    min_prefix_len = 4
+    min_prefix_len = 3
 
     if len(word) >= min_prefix_len and len(keyword_part) >= min_prefix_len:
         if word[:min_prefix_len] == keyword_part[:min_prefix_len]:
@@ -119,21 +120,7 @@ def search_top_faq(question: str, faq_entries: list[dict], top_n: int = 3) -> li
     return results[:top_n]
 
 
-# Вывод лучших совпадений в FAQ (топ 3)
-def search_best_faq(question: str, faq_entries: list[dict], min_score: int = MIN_SCORE_TO_ACCEPT):
-    results = search_top_faq(question, faq_entries, top_n=1)
-    if not results:
-        return None
-
-    score, entry = results[0]
-    if score < min_score:
-        return None
-
-    return score, entry
-
-
-
-# Отсечение неподходящих элементов (количество набранных очков < 2 || разница в очках с лучшим вариантом > 1)
+# Отсечение неподходящих элементов (количество набранных очков < 2 || разница в очках с лучшим вариантом > 1, вывод первых 5 лучших вариантов)
 def search_matching_faq(question: str, faq_entries: list[dict], min_score: int = MIN_SCORE_TO_ACCEPT, top_n: int = 5):
     results = search_top_faq(question, faq_entries, top_n=top_n)
     results = [(score, entry) for score, entry in results if score >= min_score]
@@ -310,6 +297,14 @@ def get_open_questions_text(limit: int = 10) -> str:
         lines.append(f"{i}. {item['question']}")
 
     return "\n".join(lines)
+
+
+async def safe_edit_text(message: Message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
 
 
 # =========================
@@ -534,7 +529,8 @@ async def answer_open_question_callback(callback: CallbackQuery, state: FSMConte
     questions = load_pending_questions_without_answers()
 
     if not questions:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "Сейчас нет открытых вопросов без ответа.",
             reply_markup=help_team_keyboard()
         )
