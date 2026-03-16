@@ -24,7 +24,7 @@ FAQ_FILE = "faq.json"
 # Минимальный счет который должен набрать запрос чтобы ответ из FAQ был выведен
 MIN_SCORE_TO_ACCEPT = 2
 
-SUGGESTIONS_FILE = Path("suggestions.json")
+SUGGESTIONS_FILE = Path("suggestions.jsonl")
 
 
 # =========================
@@ -66,7 +66,7 @@ def load_faq(filename: str = FAQ_FILE) -> list[dict]:
 # РАБОТА С ХРАНИЛИЩЕМ
 # =========================
 
-# Создает файл suggestions.json если его еще нет
+# Создает файл suggestions.jsonl если его еще нет
 def ensure_storage() -> None:
     SUGGESTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not SUGGESTIONS_FILE.exists():

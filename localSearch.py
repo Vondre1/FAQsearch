@@ -15,7 +15,7 @@ FAQ_FILE = "faq.json"
 MIN_SCORE_TO_ACCEPT = 2
 
 
-SUGGESTIONS_FILE = Path("suggestions.json")
+SUGGESTIONS_FILE = Path("suggestions.jsonl")
 
 
 # =========================
