@@ -1,37 +1,26 @@
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
-import yaml
+from search_engine import search
 
 
 # =========================
 # НАСТРОЙКИ
 # =========================
 
-FAQ_FILE = "faq.yaml"
+FAQ_FILE = "faq.json"
 
-# Минимальная длина слова, которое мы вообще учитываем при поиске (пропуск предлогов)
-MIN_WORD_LEN = 3
 # Минимальный счет который должен набрать запрос чтобы ответ из FAQ был выведен
 MIN_SCORE_TO_ACCEPT = 2
 
 
-BASE_DIR = Path("pending_questions")
-NO_ANSWER_DIR = BASE_DIR / "no_answer"
-WITH_ANSWER_DIR = BASE_DIR / "with_answer"
+SUGGESTIONS_FILE = Path("suggestions.json")
 
 
 # =========================
 # РАБОТА С FAQ
 # =========================
-
-# Разделение ввода на отдельные слова и приведение к нижнему регистру, отбрасывает слова с длиной меньше MIN_WORD_LEN
-def split_words(text: str) -> set[str]:
-    words = re.findall(r"[а-яА-Яa-zA-Z0-9ёЁ]+", text.lower())
-    return {word for word in words if len(word) >= MIN_WORD_LEN}
-
 
 #  Загрузка FAQ
 def load_faq(filename: str = FAQ_FILE) -> list[dict]:
@@ -41,117 +30,41 @@ def load_faq(filename: str = FAQ_FILE) -> list[dict]:
         raise FileNotFoundError(f"Файл FAQ не найден: {filename}")
 
     with open(file_path, "r", encoding="utf-8") as file:
-        faq_data = yaml.safe_load(file)
+        faq_data = json.load(file)
 
-    if not faq_data or "data" not in faq_data:
-        raise ValueError("Некорректный формат faq.yaml. Ожидается ключ 'data'.")
+    if not isinstance(faq_data, list):
+        raise ValueError("Некорректный формат faq.json. Ожидается список объектов.")
 
-    return faq_data["data"]
-
-
-# Сравнивает слова введенные пользователем и ключевые слова из FAQ
-# Вес совпадения:
-# 4 - точное совпадение
-# 3 - частичное совпадение
-# 2 - часть слова (начало) совпадает с ключевым
-# 0 - нет совпадения
-def compare_word_and_keyword(word: str, keyword_part: str) -> int:
-    if word == keyword_part:
-        return 4
-
-    if word in keyword_part or keyword_part in word:
-        return 3
-
-    min_prefix_len = 3
-
-    if len(word) >= min_prefix_len and len(keyword_part) >= min_prefix_len:
-        if word[:min_prefix_len] == keyword_part[:min_prefix_len]:
-            return 2
-
-    return 0
-
-
-# Подсчет количества очков для поиска лучшего совпадения
-def calculate_score(question_words: set[str], keywords: list[str]) -> int:
-    total_score = 0
-    used_keyword_parts = set()
-
-    for keyword in keywords:
-        keyword_parts = split_words(keyword)
-
-        for part in keyword_parts:
-            best_score_for_part = 0
-
-            for word in question_words:
-                score = compare_word_and_keyword(word, part)
-                if score > best_score_for_part:
-                    best_score_for_part = score
-
-            if best_score_for_part > 0 and part not in used_keyword_parts:
-                total_score += best_score_for_part
-                used_keyword_parts.add(part)
-
-    return total_score
-
-
-# Поиск лучших совпадений по базе FAQ
-def search_top_faq(question: str, faq_entries: list[dict], top_n: int = 3) -> list[tuple[int, dict]]:
-    question_words = split_words(question)
-    results = []
-
-    for entry in faq_entries:
-        score = calculate_score(question_words, entry.get("keywords", []))
-        results.append((score, entry))
-
-    results.sort(key=lambda x: x[0], reverse=True)
-    return results[:top_n]
-
-
-# Отсечение неподходящих элементов (количество набранных очков < 2 || разница в очках с лучшим вариантом > 1, вывод первых 5 лучших вариантов)
-def search_matching_faq(question: str, faq_entries: list[dict], min_score: int = MIN_SCORE_TO_ACCEPT, top_n: int = 5):
-    results = search_top_faq(question, faq_entries, top_n=top_n)
-    results = [(score, entry) for score, entry in results if score >= min_score]
-
-    if not results:
-        return []
-
-    best_score = results[0][0]
-    return [(score, entry) for score, entry in results if score >= best_score - 1]
+    return faq_data
 
 
 # =========================
 # РАБОТА С ХРАНИЛИЩЕМ
 # =========================
 
-# Создаем папки для запросов пользователей (то что не нашлоось в FAQ)
-def ensure_dirs() -> None:
-    NO_ANSWER_DIR.mkdir(parents=True, exist_ok=True)
-    WITH_ANSWER_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# Генерирует уникальное имя файла
-def make_filename(user_id: int | str) -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    return f"{user_id}_{timestamp}.json"
+# Создаем файл для запросов пользователей (то что не нашлось в FAQ)
+def ensure_storage() -> None:
+    SUGGESTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not SUGGESTIONS_FILE.exists():
+        SUGGESTIONS_FILE.touch()
 
 
 # Сохранение вопроса без ответа
 def save_question_only(user_id: int | str, username: str | None, question: str) -> Path:
-    ensure_dirs()
+    ensure_storage()
 
     data = {
-        "user_id": user_id,
-        "username": username,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": username or str(user_id),
+        "type": "new_question",
         "question": question,
-        "created_at": datetime.now().isoformat(),
-        "status": "new"
+        "answer": None
     }
 
-    filepath = NO_ANSWER_DIR / make_filename(user_id)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
-    return filepath
+    return SUGGESTIONS_FILE
 
 
 # Сохранение вопроса с ответом
@@ -161,54 +74,72 @@ def save_question_with_answer(
     question: str,
     suggested_answer: str,
 ) -> Path:
-    ensure_dirs()
+    ensure_storage()
 
     data = {
-        "user_id": user_id,
-        "username": username,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": username or str(user_id),
+        "type": "new_question_with_answer",
         "question": question,
-        "suggested_answer": suggested_answer,
-        "created_at": datetime.now().isoformat(),
-        "status": "new"
+        "answer": suggested_answer
     }
 
-    filepath = WITH_ANSWER_DIR / make_filename(user_id)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
-    return filepath
+    return SUGGESTIONS_FILE
 
 
 # Загрузка всех вопросов без ответа
 def load_pending_questions_without_answers() -> list[dict]:
-    ensure_dirs()
+    ensure_storage()
     items = []
 
-    for file_path in NO_ANSWER_DIR.glob("*.json"):
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            data["_file"] = str(file_path)
-            items.append(data)
+    with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
 
-    items.sort(key=lambda x: x.get("created_at", ""))
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("type") == "new_question" and not data.get("answer"):
+                data["_line_number"] = line_number
+                items.append(data)
+
+    items.sort(key=lambda x: x.get("timestamp", ""))
     return items
 
 
 # Добавляет ответ к уже существующему вопросу
-def add_answer_to_existing_question(file_path: str, suggested_answer: str) -> Path:
-    ensure_dirs()
+def add_answer_to_existing_question(line_number: int, user_id: int | str, username: str | None, suggested_answer: str) -> Path:
+    ensure_storage()
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    lines = SUGGESTIONS_FILE.read_text(encoding="utf-8").splitlines()
+    if line_number < 1 or line_number > len(lines):
+        raise ValueError("Некорректный номер записи.")
 
-    data["suggested_answer"] = suggested_answer
+    raw_line = lines[line_number - 1].strip()
+    if not raw_line:
+        raise ValueError("Выбранная запись пуста.")
 
-    new_path = WITH_ANSWER_DIR / Path(file_path).name
-    with open(new_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    data = json.loads(raw_line)
 
-    Path(file_path).unlink(missing_ok=True)
-    return new_path
+    new_data = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": username or str(user_id),
+        "type": "answer_open_question",
+        "question": data.get("question"),
+        "answer": suggested_answer
+    }
+
+    with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(new_data, ensure_ascii=False) + "\n")
+
+    return SUGGESTIONS_FILE
 
 
 # Если есть полностью одинаковые вопросы от пользователей, новый не сохраняется
@@ -216,17 +147,21 @@ def add_answer_to_existing_question(file_path: str, suggested_answer: str) -> Pa
 def is_similar_question_already_saved(question: str) -> bool:
     normalized = question.strip().lower()
 
-    ensure_dirs()
+    ensure_storage()
 
-    for folder in [NO_ANSWER_DIR, WITH_ANSWER_DIR]:
-        for file_path in folder.glob("*.json"):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if data.get("question", "").strip().lower() == normalized:
-                    return True
-            except Exception:
+    with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("question", "").strip().lower() == normalized:
+                return True
 
     return False
 
@@ -271,12 +206,13 @@ def ask_non_empty(prompt: str) -> str:
 def search_question_flow(faq_entries: list[dict], user_id: str, username: str | None):
     question = ask_non_empty("\nВведите вопрос: ")
 
-    results = search_matching_faq(question, faq_entries, min_score=MIN_SCORE_TO_ACCEPT, top_n=3)
+    results = search(question, faq_entries, top_n=3)
 
     if results:
         print("\nВот что удалось найти:\n")
-        for i, (score, entry) in enumerate(results, start=1):
-            print(f"{i}. {entry.get('answer', 'Ответ отсутствует')}")
+        for i, item in enumerate(results, start=1):
+            if item["score"] >= MIN_SCORE_TO_ACCEPT:
+                print(f"{i}. {item.get('answer', 'Ответ отсутствует')}")
         print()
         return
 
@@ -322,7 +258,7 @@ def new_question_with_answer_flow(user_id: str, username: str | None):
     print("\nСпасибо. Вопрос с предложенным ответом сохранён и отправлен команде на проверку.\n")
 
 
-def answer_open_question_flow():
+def answer_open_question_flow(user_id: str, username: str | None):
     questions = get_open_questions(limit=10)
 
     if not questions:
@@ -350,7 +286,12 @@ def answer_open_question_flow():
     print(f"\nВыбран вопрос:\n{selected['question']}\n")
     suggested_answer = ask_non_empty("Теперь напиши свой вариант ответа: ")
 
-    add_answer_to_existing_question(selected["_file"], suggested_answer)
+    add_answer_to_existing_question(
+        selected["_line_number"],
+        user_id=user_id,
+        username=username,
+        suggested_answer=suggested_answer
+    )
     print("\nСпасибо. Твой вариант ответа сохранён и отправлен команде на проверку.\n")
 
 
@@ -370,7 +311,7 @@ def help_team_menu(user_id: str, username: str | None):
         elif choice == "2":
             new_question_with_answer_flow(user_id, username)
         elif choice == "3":
-            answer_open_question_flow()
+            answer_open_question_flow(user_id, username)
         elif choice == "0":
             print()
             return
@@ -383,7 +324,7 @@ def help_team_menu(user_id: str, username: str | None):
 # =========================
 
 def main():
-    ensure_dirs()
+    ensure_storage()
 
     try:
         faq_entries = load_faq(FAQ_FILE)

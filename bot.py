@@ -1,17 +1,17 @@
 import asyncio
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
-import yaml
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from search_engine import search
 
 
 # =========================
@@ -19,14 +19,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # =========================
 
 BOT_TOKEN = "8633303763:AAEPeDPL-PX41f69eN8VgvzdQ4jFXr_D_zY"
-FAQ_FILE = "faq.yaml"
+FAQ_FILE = "faq.json"
 
-MIN_WORD_LEN = 3
+# Минимальный счет который должен набрать запрос чтобы ответ из FAQ был выведен
 MIN_SCORE_TO_ACCEPT = 2
 
-BASE_DIR = Path("pending_questions")
-NO_ANSWER_DIR = BASE_DIR / "no_answer"
-WITH_ANSWER_DIR = BASE_DIR / "with_answer"
+SUGGESTIONS_FILE = Path("suggestions.json")
 
 
 # =========================
@@ -48,195 +46,146 @@ class BotStates(StatesGroup):
 # РАБОТА С FAQ
 # =========================
 
-
-# Удаляем слова у которых длина меньше заданного значения (по умолчанию 3), чтобы не учитывать предлоги и тп
-def split_words(text: str) -> set[str]:
-    words = re.findall(r"[а-яА-Яa-zA-Z0-9ёЁ]+", text.lower())
-    return {word for word in words if len(word) >= MIN_WORD_LEN}
-
-
 # Загрузка FAQ
 def load_faq(filename: str = FAQ_FILE) -> list[dict]:
-    with open(filename, "r", encoding="utf-8") as file:
-        faq_data = yaml.safe_load(file)
-    return faq_data["data"]
+    file_path = Path(filename)
 
+    if not file_path.exists():
+        raise FileNotFoundError(f"Файл FAQ не найден: {filename}")
 
-# Сравнивает слова введенные пользователем и ключевые слова из FAQ
-# Вес совпадения:
-# 4 - точное совпадение
-# 3 - частичное совпадение
-# 2 - часть слова (начало) совпадает с ключевым
-# 0 - нет совпадения
-def compare_word_and_keyword(word: str, keyword_part: str) -> int:
-    if word == keyword_part:
-        return 4
+    with open(file_path, "r", encoding="utf-8") as file:
+        faq_data = json.load(file)
 
-    if word in keyword_part or keyword_part in word:
-        return 3
+    if not isinstance(faq_data, list):
+        raise ValueError("Некорректный формат faq.json. Ожидается список объектов.")
 
-    min_prefix_len = 3
-
-    if len(word) >= min_prefix_len and len(keyword_part) >= min_prefix_len:
-        if word[:min_prefix_len] == keyword_part[:min_prefix_len]:
-            return 2
-
-    return 0
-
-
-# Подсчет количества очков для поиска лучшего совпадения
-def calculate_score(question_words: set[str], keywords: list[str]) -> int:
-    total_score = 0
-    used_keyword_parts = set()
-
-    for keyword in keywords:
-        keyword_parts = split_words(keyword)
-
-        for part in keyword_parts:
-            best_score_for_part = 0
-
-            for word in question_words:
-                score = compare_word_and_keyword(word, part)
-                if score > best_score_for_part:
-                    best_score_for_part = score
-
-            if best_score_for_part > 0 and part not in used_keyword_parts:
-                total_score += best_score_for_part
-                used_keyword_parts.add(part)
-
-    return total_score
-
-
-# Поиск лучших совпадений по базе FAQ
-def search_top_faq(question: str, faq_entries: list[dict], top_n: int = 3) -> list[tuple[int, dict]]:
-    question_words = split_words(question)
-    results = []
-
-    for entry in faq_entries:
-        score = calculate_score(question_words, entry["keywords"])
-        results.append((score, entry))
-
-    results.sort(key=lambda x: x[0], reverse=True)
-    return results[:top_n]
-
-
-# Отсечение неподходящих элементов (количество набранных очков < 2 || разница в очках с лучшим вариантом > 1, вывод первых 5 лучших вариантов)
-def search_matching_faq(question: str, faq_entries: list[dict], min_score: int = MIN_SCORE_TO_ACCEPT, top_n: int = 5):
-    results = search_top_faq(question, faq_entries, top_n=top_n)
-    results = [(score, entry) for score, entry in results if score >= min_score]
-
-    if not results:
-        return []
-
-    best_score = results[0][0]
-    return [(score, entry) for score, entry in results if score >= best_score - 1]
-
+    return faq_data
 
 
 # =========================
 # РАБОТА С ХРАНИЛИЩЕМ
 # =========================
 
-def ensure_dirs() -> None:
-    NO_ANSWER_DIR.mkdir(parents=True, exist_ok=True)
-    WITH_ANSWER_DIR.mkdir(parents=True, exist_ok=True)
+# Создает файл suggestions.json если его еще нет
+def ensure_storage() -> None:
+    SUGGESTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not SUGGESTIONS_FILE.exists():
+        SUGGESTIONS_FILE.touch()
 
 
-def make_filename(user_id: int | str) -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    return f"{user_id}_{timestamp}.json"
-
-
+# Сохранение вопроса без ответа
 def save_question_only(user_id: int | str, username: str | None, question: str) -> Path:
-    ensure_dirs()
+    ensure_storage()
 
     data = {
-        "user_id": user_id,
-        "username": username,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": username or str(user_id),
+        "type": "new_question",
         "question": question,
-        "created_at": datetime.now().isoformat(),
-        "status": "new"
+        "answer": None
     }
 
-    filepath = NO_ANSWER_DIR / make_filename(user_id)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
-    return filepath
+    return SUGGESTIONS_FILE
 
 
+# Сохранение вопроса с ответом
 def save_question_with_answer(
     user_id: int | str,
     username: str | None,
     question: str,
     suggested_answer: str,
 ) -> Path:
-    ensure_dirs()
+    ensure_storage()
 
     data = {
-        "user_id": user_id,
-        "username": username,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": username or str(user_id),
+        "type": "new_question_with_answer",
         "question": question,
-        "suggested_answer": suggested_answer,
-        "created_at": datetime.now().isoformat(),
-        "status": "new"
+        "answer": suggested_answer
     }
 
-    filepath = WITH_ANSWER_DIR / make_filename(user_id)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
-    return filepath
+    return SUGGESTIONS_FILE
 
 
+# Загрузка всех вопросов без ответа
 def load_pending_questions_without_answers() -> list[dict]:
-    ensure_dirs()
+    ensure_storage()
     items = []
 
-    for file_path in NO_ANSWER_DIR.glob("*.json"):
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            data["_file"] = str(file_path)
-            items.append(data)
+    with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
 
-    items.sort(key=lambda x: x.get("created_at", ""))
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("type") == "new_question" and not data.get("answer"):
+                data["_line_number"] = line_number
+                items.append(data)
+
+    items.sort(key=lambda x: x.get("timestamp", ""))
     return items
 
 
-def add_answer_to_existing_question(file_path: str, suggested_answer: str) -> Path:
-    ensure_dirs()
+# Добавляет ответ к уже существующему вопросу
+def add_answer_to_existing_question(line_number: int, user_id: int | str, username: str | None, suggested_answer: str) -> Path:
+    ensure_storage()
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    lines = SUGGESTIONS_FILE.read_text(encoding="utf-8").splitlines()
+    if line_number < 1 or line_number > len(lines):
+        raise ValueError("Некорректный номер записи.")
 
-    data["suggested_answer"] = suggested_answer
+    raw_line = lines[line_number - 1].strip()
+    if not raw_line:
+        raise ValueError("Выбранная запись пуста.")
 
-    new_path = WITH_ANSWER_DIR / Path(file_path).name
-    with open(new_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    data = json.loads(raw_line)
 
-    Path(file_path).unlink(missing_ok=True)
-    return new_path
+    new_data = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user": username or str(user_id),
+        "type": "answer_open_question",
+        "question": data.get("question"),
+        "answer": suggested_answer
+    }
+
+    with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(new_data, ensure_ascii=False) + "\n")
+
+    return SUGGESTIONS_FILE
 
 
+# Если есть полностью одинаковые вопросы от пользователей, новый не сохраняется
+# проверка пока глупая, ес вопрос хоть немного отличается, его добавят
 def is_similar_question_already_saved(question: str) -> bool:
-    """
-    Простая защита от дублей:
-    если такой же текст уже есть среди неотвеченных или с ответом
-    """
     normalized = question.strip().lower()
 
-    ensure_dirs()
+    ensure_storage()
 
-    for folder in [NO_ANSWER_DIR, WITH_ANSWER_DIR]:
-        for file_path in folder.glob("*.json"):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if data.get("question", "").strip().lower() == normalized:
-                    return True
-            except Exception:
+    with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if data.get("question", "").strip().lower() == normalized:
+                return True
 
     return False
 
@@ -263,7 +212,7 @@ def not_found_keyboard():
     return builder.as_markup()
 
 
-#  Помощь команде
+# Помощь команде
 def help_team_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="Предложить новый вопрос", callback_data="new_question_only")
@@ -286,6 +235,7 @@ def back_to_help_team_keyboard():
 # ВСПОМОГАТЕЛЬНОЕ (для кнопок)
 # =========================
 
+# Возвращает limit первых открытых вопросов одной строкой для вывода в сообщение
 def get_open_questions_text(limit: int = 10) -> str:
     questions = load_pending_questions_without_answers()
 
@@ -299,6 +249,7 @@ def get_open_questions_text(limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+# Безопасное редактирование сообщения чтобы не ловить ошибку если текст тот же самый
 async def safe_edit_text(message: Message, text: str, reply_markup=None):
     try:
         await message.edit_text(text, reply_markup=reply_markup)
@@ -318,6 +269,7 @@ faq_entries = []
 # ХЕНДЛЕРЫ
 # =========================
 
+# Команда /start
 async def start_handler(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
@@ -329,6 +281,7 @@ async def start_handler(message: Message, state: FSMContext):
     )
 
 
+# Команда /helpteam
 async def help_command_handler(message: Message):
     await message.answer(
         "Меню помощи команде:",
@@ -336,6 +289,7 @@ async def help_command_handler(message: Message):
     )
 
 
+# Открывает меню помощи команде
 async def help_team_callback(callback: CallbackQuery):
     await callback.message.edit_text(
         "Меню помощи команде:",
@@ -344,6 +298,7 @@ async def help_team_callback(callback: CallbackQuery):
     await callback.answer()
 
 
+# Возвращает пользователя в меню помощи команде и очищает состояние
 async def back_to_help_team_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
@@ -353,6 +308,7 @@ async def back_to_help_team_callback(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
+# Возвращает пользователя в главное меню и очищает состояние
 async def back_to_main_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
@@ -362,19 +318,21 @@ async def back_to_main_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# Основной обработчик вопросов пользователя
 async def message_search_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if not text:
         return
 
-    results = search_matching_faq(text, faq_entries, min_score=MIN_SCORE_TO_ACCEPT, top_n=3)
+    results = search(text, faq_entries, top_n=3)
+    results = [item for item in results if item.get("score", 0) >= MIN_SCORE_TO_ACCEPT]
 
     if results:
         await state.clear()
 
         answers = []
-        for i, (score, entry) in enumerate(results, start=1):
-            answers.append(f"{i}. {entry['answer']}")
+        for i, item in enumerate(results, start=1):
+            answers.append(f"{i}. {item.get('answer', 'Ответ отсутствует')}")
 
         await message.answer(
             "Вот что удалось найти:\n\n" + "\n\n".join(answers),
@@ -392,6 +350,7 @@ async def message_search_handler(message: Message, state: FSMContext):
     )
 
 
+# Сохраняет вопрос который бот не смог найти в FAQ
 async def save_unknown_question_callback(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     question = data.get("last_unknown_question")
@@ -423,6 +382,7 @@ async def save_unknown_question_callback(callback: CallbackQuery, state: FSMCont
     await callback.answer()
 
 
+# Отменяет отправку нераспознанного вопроса
 async def cancel_unknown_question_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
@@ -432,8 +392,11 @@ async def cancel_unknown_question_callback(callback: CallbackQuery, state: FSMCo
     await callback.answer()
 
 
-# ---------- Предложить новый вопрос без ответа ----------
+# =========================
+# ПРЕДЛОЖИТЬ НОВЫЙ ВОПРОС БЕЗ ОТВЕТА
+# =========================
 
+# Переводит бота в режим ожидания нового вопроса
 async def new_question_only_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_new_question_for_team)
     await callback.message.edit_text(
@@ -443,6 +406,7 @@ async def new_question_only_callback(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
+# Сохраняет новый вопрос без ответа
 async def save_new_question_only_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
 
@@ -467,8 +431,11 @@ async def save_new_question_only_handler(message: Message, state: FSMContext):
     await state.clear()
 
 
-# ---------- Предложить новый вопрос с ответом ----------
+# =========================
+# ПРЕДЛОЖИТЬ НОВЫЙ ВОПРОС С ОТВЕТОМ
+# =========================
 
+# Переводит бота в режим ввода нового вопроса с ответом
 async def new_question_with_answer_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_new_question_with_answer_question)
     await callback.message.edit_text(
@@ -478,6 +445,7 @@ async def new_question_with_answer_callback(callback: CallbackQuery, state: FSMC
     await callback.answer()
 
 
+# Сохраняет текст вопроса и просит пользователя ввести ответ
 async def new_question_with_answer_question_handler(message: Message, state: FSMContext):
     question = (message.text or "").strip()
 
@@ -490,10 +458,11 @@ async def new_question_with_answer_question_handler(message: Message, state: FSM
 
     await message.answer(
         "Теперь напиши свой вариант ответа на этот вопрос.",
-    reply_markup=back_to_help_team_keyboard()
+        reply_markup=back_to_help_team_keyboard()
     )
 
 
+# Сохраняет новый вопрос вместе с предложенным ответом
 async def new_question_with_answer_answer_handler(message: Message, state: FSMContext):
     suggested_answer = (message.text or "").strip()
 
@@ -523,8 +492,11 @@ async def new_question_with_answer_answer_handler(message: Message, state: FSMCo
     await state.clear()
 
 
-# ---------- Предложить ответ на открытый вопрос ----------
+# =========================
+# ПРЕДЛОЖИТЬ ОТВЕТ НА ОТКРЫТЫЙ ВОПРОС
+# =========================
 
+# Показывает список открытых вопросов и просит выбрать номер
 async def answer_open_question_callback(callback: CallbackQuery, state: FSMContext):
     questions = load_pending_questions_without_answers()
 
@@ -546,6 +518,7 @@ async def answer_open_question_callback(callback: CallbackQuery, state: FSMConte
     await callback.answer()
 
 
+# Принимает номер выбранного вопроса
 async def select_open_question_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     questions = load_pending_questions_without_answers()
@@ -570,7 +543,7 @@ async def select_open_question_handler(message: Message, state: FSMContext):
 
     selected = questions[index - 1]
 
-    await state.update_data(selected_open_question_file=selected["_file"])
+    await state.update_data(selected_open_question_line=selected["_line_number"])
     await state.set_state(BotStates.waiting_answer_for_open_question)
 
     await message.answer(
@@ -579,6 +552,7 @@ async def select_open_question_handler(message: Message, state: FSMContext):
     )
 
 
+# Сохраняет ответ на выбранный открытый вопрос
 async def answer_for_open_question_handler(message: Message, state: FSMContext):
     suggested_answer = (message.text or "").strip()
 
@@ -587,14 +561,19 @@ async def answer_for_open_question_handler(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    file_path = data.get("selected_open_question_file")
+    line_number = data.get("selected_open_question_line")
 
-    if not file_path:
+    if not line_number:
         await message.answer("Не удалось получить выбранный вопрос.")
         await state.clear()
         return
 
-    add_answer_to_existing_question(file_path, suggested_answer)
+    add_answer_to_existing_question(
+        line_number=line_number,
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        suggested_answer=suggested_answer
+    )
 
     await message.answer(
         "Спасибо. Твой вариант ответа сохранён и отправлен команде на проверку.",
@@ -610,7 +589,7 @@ async def answer_for_open_question_handler(message: Message, state: FSMContext):
 async def main():
     global faq_entries
 
-    ensure_dirs()
+    ensure_storage()
     faq_entries = load_faq(FAQ_FILE)
 
     bot = Bot(token=BOT_TOKEN)
