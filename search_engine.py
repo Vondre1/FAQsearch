@@ -8,6 +8,9 @@ import re
 # Минимальная длина слова, которое мы вообще учитываем при поиске (пропуск предлогов)
 MIN_WORD_LEN = 3
 
+# Порог уверенности по умолчанию
+DEFAULT_CONFIDENCE_THRESHOLD = 4
+
 
 # =========================
 # РАБОТА С FAQ
@@ -89,14 +92,9 @@ def search_matching_faq(question: str, faq_entries: list[dict], min_score: int =
     return [(score, entry) for score, entry in results if score >= best_score - 1]
 
 
-def search(query: str, faq_data: list[dict], top_n: int = 3) -> list[dict]:
-    """
-    Принимает запрос и список FAQ-записей.
-    Возвращает топ-N результатов с полями: id, question, answer, score.
-    """
-    results = search_matching_faq(query, faq_data, min_score=2, top_n=top_n)
-
+def format_results(results: list[tuple[int, dict]]) -> list[dict]:
     formatted = []
+
     for score, entry in results:
         formatted.append({
             "id": entry.get("id"),
@@ -106,3 +104,42 @@ def search(query: str, faq_data: list[dict], top_n: int = 3) -> list[dict]:
         })
 
     return formatted
+
+
+def search(query: str, faq_data: list[dict], top_n: int = 3) -> list[dict]:
+    """
+    Принимает запрос и список FAQ-записей.
+    Возвращает топ-N результатов с полями: id, question, answer, score.
+    """
+    results = search_matching_faq(query, faq_data, min_score=2, top_n=top_n)
+    return format_results(results)
+
+
+def search_with_confidence(
+    query: str,
+    faq_data: list[dict],
+    top_n: int = 3,
+    confidence_threshold: int = DEFAULT_CONFIDENCE_THRESHOLD
+) -> dict:
+    """
+    Принимает запрос и список FAQ-записей.
+    Возвращает:
+    {
+        "results": [...],
+        "confident": bool
+    }
+
+    confident = True, если лучший score >= confidence_threshold
+    confident = False, если все результаты < confidence_threshold
+    """
+
+    top_results = search_top_faq(query, faq_data, top_n=top_n)
+    best_score = top_results[0][0] if top_results else 0
+
+    matching_results = search_matching_faq(query, faq_data, min_score=2, top_n=top_n)
+    formatted_results = format_results(matching_results)
+
+    return {
+        "results": formatted_results,
+        "confident": best_score >= confidence_threshold
+    }
