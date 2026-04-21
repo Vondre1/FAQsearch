@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-from search_engine import search
+from search_engine import search_with_confidence
+from suggestion import get_gaps
 
 
 # =========================
@@ -13,6 +14,9 @@ FAQ_FILE = "faq.json"
 
 # Минимальный счет который должен набрать запрос чтобы ответ из FAQ был выведен
 MIN_SCORE_TO_ACCEPT = 2
+
+# Порог уверенности
+CONFIDENCE_THRESHOLD = 4
 
 
 # =========================
@@ -234,9 +238,18 @@ def ask_non_empty(prompt: str) -> str:
 def search_question_flow(faq_entries: list[dict], user_id: str, username: str | None):
     question = ask_non_empty("\nВведите вопрос: ")
 
-    results = search(question, faq_entries, top_n=3)
+    search_result = search_with_confidence(
+        query=question,
+        faq_data=faq_entries,
+        top_n=3,
+        confidence_threshold=CONFIDENCE_THRESHOLD
+    )
 
-    if results:
+    results = search_result["results"]
+    confident = search_result["confident"]
+
+    # Уверенно нашли ответ
+    if results and confident:
         print("\nВот что удалось найти:\n")
         for i, item in enumerate(results, start=1):
             if item["score"] >= MIN_SCORE_TO_ACCEPT:
@@ -244,11 +257,23 @@ def search_question_flow(faq_entries: list[dict], user_id: str, username: str | 
         print()
         return
 
-    print("\nЯ не нашёл подходящий ответ в FAQ.\n")
+    # Если поиск неуверенный или вообще ничего не найдено —
+    # сохраняем это как потенциальный пробел в FAQ
+
+    if results:
+        print("\nНашлись похожие ответы, но я не уверен, что это именно то, что нужно:\n")
+        for i, item in enumerate(results, start=1):
+            print(f"{i}. {item.get('answer', 'Ответ отсутствует')} (score={item['score']})")
+        print()
+    else:
+        print("\nЯ не нашёл подходящий ответ в FAQ.\n")
+
+    print("Этот запрос сохранён как возможный пробел в FAQ.\n")
+
     choice = input("Отправить этот вопрос команде на добавление? (да/НЕТ): ").strip().lower()
 
     if choice not in ("да", "д", "yes", "y"):
-        print("\nХорошо, вопрос не отправлен.\n")
+        print("\nХорошо, вопрос не отправлен команде.\n")
         return
 
     if is_similar_question_already_saved(question):
@@ -323,6 +348,23 @@ def answer_open_question_flow(user_id: str, username: str | None):
     print("\nСпасибо. Твой вариант ответа сохранён и отправлен команде на проверку.\n")
 
 
+# Вывод похожих запросов
+def print_faq_gaps(limit: int = 10) -> None:
+    gaps = get_gaps(str(SUGGESTIONS_FILE), top_n=limit)
+
+    if not gaps:
+        print("\nПока нет сохранённых запросов FAQ.\n")
+        return
+
+    print("\nТоп запросов FAQ:")
+    for i, item in enumerate(gaps, start=1):
+        print(f"{i}. {item['query']} — {item['count']} шт.")
+        examples = item.get("examples", [])
+        if examples:
+            print(f"   Примеры: {'; '.join(examples)}")
+    print()
+
+
 # Меню помощи команде
 def help_team_menu(user_id: str, username: str | None):
     while True:
@@ -371,6 +413,7 @@ def main():
         print("=== Главное меню ===")
         print("1. Найти ответ в FAQ")
         print("2. Помочь команде")
+        print("3. Показать частые запросы FAQ")
         print("0. Выход")
 
         choice = input("Выбери действие: ").strip()
@@ -379,6 +422,8 @@ def main():
             search_question_flow(faq_entries, user_id, username)
         elif choice == "2":
             help_team_menu(user_id, username)
+        elif choice == "3":
+            print_faq_gaps(limit=10)
         elif choice == "0":
             print("Выход из программы.")
             break
